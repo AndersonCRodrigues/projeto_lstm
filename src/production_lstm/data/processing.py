@@ -3,7 +3,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import torch
 from torch.utils.data import Dataset
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.impute import SimpleImputer
 from typing import List, Tuple, Any
 
@@ -36,12 +36,9 @@ def gerar_serie_multivariada_realista(n_pontos: int = 3000) -> pd.DataFrame:
     sazonalidade = 15 * np.sin(2 * np.pi * t / 365.25) + 5 * np.sin(2 * np.pi * t / 7)
 
     vol_break = int(n_pontos * 0.75)
-    ruido = np.concatenate(
-        [
-            np.random.normal(0, 2, vol_break),
-            np.random.normal(0, 4, n_pontos - vol_break),
-        ]
-    )
+    ruido1 = np.random.normal(0, 2, vol_break)
+    ruido2 = np.random.normal(0, 4, n_pontos - vol_break)
+    ruido = np.concatenate([ruido1, ruido2])
 
     serie_principal = tendencia + sazonalidade + ruido + 50
 
@@ -72,4 +69,64 @@ def gerar_serie_multivariada_realista(n_pontos: int = 3000) -> pd.DataFrame:
     df["fator_externo"] = 3 * np.cos(0.05 * t) + np.random.normal(0, 0.5, n_pontos)
     df["evento_especial"] = np.random.choice([0, 1], n_pontos, p=[0.97, 0.03])
 
-    return df.drop(columns=["data"])
+    df = df.drop(columns=["data"])
+
+    return df
+
+
+def preprocessar_dados_robusto(
+    df: pd.DataFrame,
+    target_col: str = "valor_principal",
+    seq_length: int = 60,
+    val_size: float = 0.15,
+    test_size: float = 0.15,
+    scaler_type: str = "standard",
+) -> Tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    Any,
+    Any,
+    List[str],
+]:
+    feature_cols = [col for col in df.columns if col != target_col]
+
+    imputer = SimpleImputer(strategy="mean")
+    df_imputed = pd.DataFrame(imputer.fit_transform(df), columns=df.columns)
+
+    scaler_target = StandardScaler()
+    scaler_features = StandardScaler()
+
+    target_scaled = scaler_target.fit_transform(df_imputed[[target_col]]).flatten()
+    features_scaled = scaler_features.fit_transform(df_imputed[feature_cols])
+
+    X, y = [], []
+    for i in range(len(df_imputed) - seq_length):
+        X.append(features_scaled[i : i + seq_length])
+        y.append(target_scaled[i + seq_length])
+
+    X, y = np.array(X), np.array(y)
+
+    n_total = len(X)
+    n_test = int(n_total * test_size)
+    n_val = int(n_total * val_size)
+    n_train = n_total - n_test - n_val
+
+    X_train, y_train = X[:n_train], y[:n_train]
+    X_val, y_val = X[n_train : n_train + n_val], y[n_train : n_train + n_val]
+    X_test, y_test = X[n_train + n_val :], y[n_train + n_val :]
+
+    return (
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        X_test,
+        y_test,
+        scaler_target,
+        scaler_features,
+        feature_cols,
+    )
