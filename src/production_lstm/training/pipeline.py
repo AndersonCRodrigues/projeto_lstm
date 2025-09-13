@@ -114,7 +114,7 @@ class ModelTrainer:
         return {"test_mae": mae, "test_r2": r2}
 
 
-def run_training_pipeline(optimize: bool = True, n_trials: int = 30):
+def run_training_pipeline(optimize: bool = True, n_trials: int = 15):
     logger = StructuredJSONLogger(settings.log_level)
     logger.log_event("training_pipeline_started", optimize=optimize, n_trials=n_trials)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -131,12 +131,6 @@ def run_training_pipeline(optimize: bool = True, n_trials: int = 30):
         scaler_features,
         feature_cols,
     ) = preprocessar_dados_robusto(df)
-    logger.log_event(
-        "data_processing_completed",
-        train_size=len(X_train),
-        val_size=len(X_val),
-        test_size=len(X_test),
-    )
 
     train_dataset = TimeSeriesDataset(X_train, y_train)
     val_dataset = TimeSeriesDataset(X_val, y_val)
@@ -161,15 +155,13 @@ def run_training_pipeline(optimize: bool = True, n_trials: int = 30):
             train_dataset, batch_size=training_params["batch_size"], shuffle=True
         )
         val_loader = DataLoader(val_dataset, batch_size=training_params["batch_size"])
+
         return trainer.train(train_loader, val_loader, epochs=75, trial=trial)
 
     if optimize:
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
         best_params = study.best_params
-        logger.log_event(
-            "hyperparameter_optimization_completed", best_params=best_params
-        )
     else:
         best_params = {
             "hidden_size": 64,
@@ -186,6 +178,7 @@ def run_training_pipeline(optimize: bool = True, n_trials: int = 30):
         if k in ["hidden_size", "num_lstm_layers", "dropout", "use_bidirectional"]
     }
     final_model_params["input_size"] = X_train.shape[2]
+
     final_training_params = {
         k: v for k, v in best_params.items() if k in ["learning_rate", "batch_size"]
     }
@@ -197,9 +190,7 @@ def run_training_pipeline(optimize: bool = True, n_trials: int = 30):
         np.concatenate([X_train, X_val]), np.concatenate([y_train, y_val])
     )
     full_train_loader = DataLoader(
-        full_train_dataset,
-        batch_size=final_training_params["batch_size"],
-        shuffle=True,
+        full_train_dataset, batch_size=final_training_params["batch_size"], shuffle=True
     )
     test_loader = DataLoader(
         TimeSeriesDataset(X_test, y_test),
@@ -207,6 +198,7 @@ def run_training_pipeline(optimize: bool = True, n_trials: int = 30):
     )
 
     final_trainer.train(full_train_loader, test_loader, epochs=150)
+
     final_metrics = final_trainer.get_final_metrics(test_loader, scaler_target)
     logger.log_event("final_model_training_completed", final_metrics=final_metrics)
 
@@ -230,7 +222,6 @@ def run_training_pipeline(optimize: bool = True, n_trials: int = 30):
         )
 
     logger.log_event("mlflow_versioning_completed", run_id=run.info.run_id)
-    logger.log_event("training_pipeline_finished")
 
 
 if __name__ == "__main__":
@@ -239,8 +230,6 @@ if __name__ == "__main__":
         run_training_pipeline(optimize=True, n_trials=15)
     except Exception as e:
         logger.log_error(
-            "pipeline_failed",
-            "O pipeline de treinamento falhou catastroficamente.",
-            exc_info=e,
+            "pipeline_failed", "O pipeline de treinamento falhou.", exc_info=e
         )
         raise e
