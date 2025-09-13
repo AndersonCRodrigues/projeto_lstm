@@ -1,4 +1,4 @@
-# Sistema de Produção para Previsão de Séries Temporais com LSTM
+# Sistema de Previsão de Séries Temporais com LSTM
 
 Este projeto implementa um pipeline de MLOps completo e robusto para um modelo de previsão de séries temporais com LSTM. O foco vai além do treinamento de um modelo, abrangendo versionamento, deployment como API, monitoramento e resiliência, seguindo as melhores práticas de engenharia de software.
 
