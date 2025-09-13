@@ -9,6 +9,7 @@ class StructuredJSONLogger:
     def __init__(self, log_level: str = "INFO"):
         self.logger = logging.getLogger("StructuredLogger")
         self.logger.setLevel(log_level)
+
         if not self.logger.handlers:
             handler = logging.StreamHandler(sys.stdout)
             self.logger.addHandler(handler)
@@ -44,7 +45,10 @@ class StructuredJSONLogger:
         self._log(level.upper(), event, kwargs)
 
     def log_error(self, event: str, error_message: str, exc_info=None, **kwargs):
-        data = {"error_message": error_message, "details": kwargs}
+        data = {
+            "error_message": error_message,
+            "details": kwargs,
+        }
         if exc_info:
             data["exception"] = str(exc_info)
         self._log("ERROR", event, data)
