@@ -25,9 +25,8 @@ class ModelInterpreter:
 
         try:
             self.feature_names = feature_names
-
             if len(background_data.shape) != 3:
-                raise ValueError("Background data must have 3D format")
+                raise ValueError("Dados de fundo para SHAP devem ter formato 3D.")
 
             background_sample = background_data[: self.config.shap_sample_size]
             background_tensor = (
@@ -35,35 +34,32 @@ class ModelInterpreter:
             )
 
             self.explainer = shap.DeepExplainer(model, background_tensor)
-
         except Exception as e:
+            print(f"Erro ao inicializar SHAP: {e}")
             self.explainer = None
 
     def explain_prediction(self, input_data: np.ndarray) -> Dict[str, Any]:
         if not self.explainer:
-            return {
-                "explanation": "Interpretability not available (explainer not initialized)"
-            }
+            return {"explanation": "Explicador SHAP não inicializado."}
 
         try:
-            input_tensor = (
-                torch.from_numpy(input_data).unsqueeze(0).float().to(self.device)
-            )
-            shap_values = self.explainer.shap_values(input_tensor)
-            agg_shap_values = np.abs(shap_values[0]).sum(axis=0)
-
-            feature_importance = [
-                {"feature": name, "shap_importance": float(importance), "rank": i + 1}
-                for i, (name, importance) in enumerate(
-                    sorted(
-                        zip(self.feature_names, agg_shap_values),
-                        key=lambda x: x[1],
-                        reverse=True,
-                    )
-                )
-            ]
-
-            return {"feature_importance": feature_importance}
-
+            return self._extracted_from_explain_prediction_6(input_data)
         except Exception as e:
-            return {"explanation": f"Error generating SHAP explanation: {str(e)}"}
+            return {"explanation": f"Erro na geração da explicação SHAP: {str(e)}"}
+
+    # TODO Rename this here and in `explain_prediction`
+    def _extracted_from_explain_prediction_6(self, input_data):
+        input_tensor = torch.from_numpy(input_data).unsqueeze(0).float().to(self.device)
+        shap_values = self.explainer.shap_values(input_tensor)
+        agg_shap_values = np.abs(shap_values[0]).sum(axis=0)
+
+        feature_importance = [
+            {"feature": name, "shap_importance": float(importance)}
+            for name, importance in zip(self.feature_names, agg_shap_values)
+        ]
+
+        feature_importance.sort(key=lambda x: x["shap_importance"], reverse=True)
+        for i, item in enumerate(feature_importance):
+            item["rank"] = i + 1
+
+        return {"feature_importance": feature_importance}

@@ -10,11 +10,11 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from scipy import stats
 
 from production_lstm.config import settings
-from production_lstm.utils.logger import ProductionLogger
+from production_lstm.utils.logger import StructuredJSONLogger
 
 
 class AlertManager:
-    def __init__(self, logger: ProductionLogger):
+    def __init__(self, logger: StructuredJSONLogger):
         self.config = settings
         self.logger = logger
         self.alert_history = deque(maxlen=100)
@@ -27,7 +27,6 @@ class AlertManager:
         r2 = r2_score(actuals, predictions)
 
         alerts = []
-
         if mae > self.config.max_mae_threshold:
             alerts.append(
                 {
@@ -38,7 +37,6 @@ class AlertManager:
                     "severity": "HIGH",
                 }
             )
-
         if rmse > self.config.max_rmse_threshold:
             alerts.append(
                 {
@@ -49,7 +47,6 @@ class AlertManager:
                     "severity": "HIGH",
                 }
             )
-
         if r2 < self.config.min_r2_threshold:
             alerts.append(
                 {
@@ -95,7 +92,7 @@ class AlertManager:
     def _process_alert(self, alert: Dict[str, Any]):
         alert["timestamp"] = datetime.now().isoformat()
         self.alert_history.append(alert)
-        self.logger.logger.warning(f"ALERT: {json.dumps(alert, default=str)}")
+        self.logger.log_event("alert_triggered", level="WARNING", alert_details=alert)
 
         if (
             alert["severity"] == "HIGH"
@@ -109,7 +106,7 @@ class AlertManager:
             msg = MimeMultipart()
             msg["From"] = self.config.smtp_user
             msg["To"] = self.config.alert_email
-            msg["Subject"] = f"🚨 Alerta do Modelo LSTM: {alert['type']}"
+            msg["Subject"] = f"Alerta do Modelo LSTM: {alert['type']}"
 
             body = f"Alerta do Sistema de Predição LSTM\n\nDetalhes:\n{json.dumps(alert, indent=2, default=str)}"
             msg.attach(MimeText(body, "plain"))
@@ -118,13 +115,15 @@ class AlertManager:
                 server.starttls()
                 server.login(self.config.smtp_user, self.config.smtp_password)
                 server.send_message(msg)
-
+            self.logger.log_event("alert_email_sent", recipient=self.config.alert_email)
         except Exception as e:
-            self.logger.logger.error(f"Failed to send email alert: {e}")
+            self.logger.log_error(
+                "alert_email_failed", "Falha ao enviar email de alerta.", exc_info=e
+            )
 
 
 class ContinuousTrainingManager:
-    def __init__(self, logger: ProductionLogger):
+    def __init__(self, logger: StructuredJSONLogger):
         self.config = settings
         self.logger = logger
         self.last_retrain_date = datetime.now()
@@ -138,6 +137,9 @@ class ContinuousTrainingManager:
         }
         self.last_retrain_date = datetime.now()
         self.new_data_buffer.clear()
+        self.logger.log_event(
+            "baseline_performance_updated", new_baseline=self.baseline_performance
+        )
 
     def add_new_data(self, features: np.ndarray, target: float):
         self.new_data_buffer.append({"features": features, "target": target})

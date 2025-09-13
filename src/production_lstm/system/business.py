@@ -14,12 +14,12 @@ class BusinessMetricsCalculator:
         actuals: np.ndarray,
         volumes: Optional[np.ndarray] = None,
     ) -> Dict[str, float]:
-
         if volumes is None:
             volumes = np.ones_like(predictions)
 
         errors = np.abs(predictions - actuals)
-        accurate_predictions_mask = errors < np.std(errors)
+        error_std_dev = np.std(errors)
+        accurate_predictions_mask = errors < error_std_dev
 
         total_error_cost = np.sum(errors * volumes * self.config.cost_per_unit_error)
         accurate_revenue = np.sum(
@@ -53,28 +53,28 @@ class BusinessMetricsCalculator:
     def generate_business_report(
         self, metrics: Dict[str, float], period: str = "período recente"
     ) -> str:
-
         status_message = (
-            "✅ MODELO GERANDO VALOR POSITIVO"
+            "MODELO GERANDO VALOR POSITIVO"
             if metrics.get("net_benefit", 0) > 0
-            else "⚠️ MODELO PRECISA DE AJUSTES (CUSTO SUPERA BENEFÍCIO)"
+            else "MODELO PRECISA DE AJUSTES (CUSTO SUPERA BENEFÍCIO)"
         )
 
-        return f"""
-📊 RELATÓRIO DE IMPACTO NO NEGÓCIO - {period.upper()}
-----------------------------------------------------
-💰 MÉTRICAS FINANCEIRAS:
-• Receita de Predições Precisas: R$ {metrics.get('accurate_revenue', 0):,.2f}
-• Economia em Inventário:      R$ {metrics.get('inventory_savings', 0):,.2f}
-• Custo Total de Erros:        R$ {metrics.get('total_error_cost', 0):,.2f}
-----------------------------------------------------
-• Benefício Líquido:           R$ {metrics.get('net_benefit', 0):,.2f}
-• ROI do Modelo:               {metrics.get('roi_percentage', 0):.1f}%
+        report = f"""
+        RELATÓRIO DE IMPACTO NO NEGÓCIO - {period.upper()}
+        ----------------------------------------------------
+        MÉTRICAS FINANCEIRAS:
+        - Receita de Predições Precisas: R$ {metrics.get('accurate_revenue', 0):,.2f}
+        - Economia em Inventário:      R$ {metrics.get('inventory_savings', 0):,.2f}
+        - Custo Total de Erros:        R$ {metrics.get('total_error_cost', 0):,.2f}
+        ----------------------------------------------------
+        - Benefício Líquido:           R$ {metrics.get('net_benefit', 0):,.2f}
+        - ROI do Modelo:               {metrics.get('roi_percentage', 0):.1f}%
 
-🎯 PERFORMANCE OPERACIONAL:
-• Taxa de Precisão (vs. std dev): {metrics.get('accuracy_rate', 0):.1%}
-• Volume Total Processado:        {metrics.get('total_volume', 0):,.0f} unidades
-• Benefício por Unidade:          R$ {metrics.get('net_benefit', 0) / max(metrics.get('total_volume', 1), 1):.2f}
+        PERFORMANCE OPERACIONAL:
+        - Taxa de Precisão: {metrics.get('accuracy_rate', 0):.1%}
+        - Volume Total Processado:        {metrics.get('total_volume', 0):,.0f} unidades
+        - Benefício por Unidade:          R$ {metrics.get('net_benefit', 0) / max(metrics.get('total_volume', 1), 1):.2f}
 
-STATUS: {status_message}
-        """.strip()
+        STATUS: {status_message}
+        """
+        return report.strip()
