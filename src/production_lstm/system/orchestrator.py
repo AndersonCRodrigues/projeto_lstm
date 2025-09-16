@@ -51,7 +51,7 @@ class ProductionLSTMSystem:
         self.interpreter.initialize_explainer(
             model, reference_data_train, feature_names
         )
-        self.training_manager.update_baseline({"mae": 0, "r2": 1})
+        self.training_manager.update_baseline({"mae": 0.1, "rmse": 0.1, "r2": 0.95})
         self.logger.log_event("production_system_initialized")
 
     def predict_with_monitoring(
@@ -65,6 +65,16 @@ class ProductionLSTMSystem:
         if not self.model or not self.feature_names:
             raise RuntimeError("Sistema não foi inicializado.")
 
+        if len(features.shape) != 2:
+            raise ValueError(
+                f"Features devem ter formato 2D (sequence_length, num_features). Recebido: {features.shape}"
+            )
+
+        if features.shape[1] != len(self.feature_names):
+            raise ValueError(
+                f"Número de features ({features.shape[1]}) não corresponde ao esperado ({len(self.feature_names)})"
+            )
+
         with torch.no_grad():
             features_scaled = self.scaler_features.transform(features)
             input_tensor = (
@@ -76,8 +86,10 @@ class ProductionLSTMSystem:
             ]
 
         result = {"prediction": float(prediction)}
+
         if explain:
-            result["explanation"] = self.interpreter.explain_prediction(features)
+            explanation = self.interpreter.explain_prediction(features)
+            result["explanation"] = explanation
 
         with self.buffer_lock:
             self.prediction_buffer.append(
@@ -90,13 +102,18 @@ class ProductionLSTMSystem:
                 }
             )
 
+        if features.shape[0] > 0:
+            feature_dict = {
+                name: float(val)
+                for name, val in zip(self.feature_names, features[-1, :])
+            }
+        else:
+            feature_dict = {}
+
         self.logger.log_prediction(
             prediction=float(prediction),
             actual=actual_value,
-            features={
-                name: float(val)
-                for name, val in zip(self.feature_names, features[-1, :])
-            },
+            features=feature_dict,
             metadata={"volume": volume},
             trace_id=trace_id,
         )
@@ -126,20 +143,55 @@ class ProductionLSTMSystem:
         results["performance"] = performance
 
         if self.reference_data_features is not None:
-            recent_features = np.array([d["features"] for d in buffer_copy]).reshape(
-                -1, self.reference_data_features.shape[1]
-            )
-            results["data_drift"] = self.alert_manager.check_data_drift(
-                recent_features, self.reference_data_features
-            )
+            try:
+                recent_features_list = []
+                for d in buffer_copy:
+                    if (
+                        isinstance(d["features"], np.ndarray)
+                        and len(d["features"].shape) == 2
+                    ):
+                        # Se features são 2D, pegar a última linha (mais recente)
+                        recent_features_list.append(d["features"][-1, :])
+                    elif (
+                        isinstance(d["features"], np.ndarray)
+                        and len(d["features"].shape) == 1
+                    ):
+                        # Se features são 1D, usar diretamente
+                        recent_features_list.append(d["features"])
+
+                if recent_features_list:
+                    recent_features = np.array(recent_features_list)
+
+                    if (
+                        recent_features.shape[1]
+                        == self.reference_data_features.shape[1]
+                    ):
+                        results["data_drift"] = self.alert_manager.check_data_drift(
+                            recent_features, self.reference_data_features
+                        )
+                    else:
+                        results["data_drift"] = {
+                            "error": f"Incompatibilidade de features: atual={recent_features.shape[1]}, referência={self.reference_data_features.shape[1]}"
+                        }
+                else:
+                    results["data_drift"] = {
+                        "error": "Nenhuma feature válida encontrada"
+                    }
+
+            except Exception as e:
+                results["data_drift"] = {"error": f"Erro na análise de drift: {str(e)}"}
 
         results["business_metrics"] = self.business_metrics.calculate_business_impact(
             predictions, actuals, volumes
         )
-        should_retrain, reason = self.training_manager.should_retrain(performance)
+
+        should_retrain, reason, details = self.training_manager.should_retrain(
+            performance
+        )
         results["retrain_recommendation"] = {
             "should_retrain": should_retrain,
             "reason": reason,
+            "details": details,  # Adicionar detalhes
         }
 
         self.logger.log_event("monitoring_check_completed", monitoring_results=results)
@@ -160,11 +212,17 @@ class ProductionLSTMSystem:
 
         perf_report = f"""
         PERFORMANCE DO MODELO:
-        - MAE:  {perf.get('mae', 0):.4f} (Alerta > {self.config.max_mae_threshold})
-        - R²:   {perf.get('r2', 0):.4f} (Alerta < {self.config.min_r2_threshold})
+        - MAE:  {perf.get('mae', 0):.4f} (Alerta > {getattr(self.config, 'max_mae_threshold', 'N/A')})
+        - RMSE: {perf.get('rmse', 0):.4f} (Alerta > {getattr(self.config, 'max_rmse_threshold', 'N/A')})
+        - R²:   {perf.get('r2', 0):.4f} (Alerta < {getattr(self.config, 'min_r2_threshold', 'N/A')})
         - Alertas: {len(perf.get('alerts_triggered', []))}"""
 
-        drift_report = f"""
+        if drift.get("error"):
+            drift_report = f"""
+        DATA DRIFT:
+        - Erro: {drift.get('error')}"""
+        else:
+            drift_report = f"""
         DATA DRIFT:
         - Drift Detectado: {'Sim' if drift.get('drift_detected') else 'Não'}
         - Alertas: {len(drift.get('alerts_triggered', []))}"""
@@ -172,11 +230,14 @@ class ProductionLSTMSystem:
         retrain_report = f"""
         RETREINAMENTO:
         - Recomendação: {'SIM' if retrain.get('should_retrain') else 'NÃO'}
-        - Motivo: {retrain.get('reason')}"""
+        - Motivo: {retrain.get('reason', 'N/A')}"""
 
-        business_report = self.business_metrics.generate_business_report(
-            business_metrics
-        )
+        try:
+            business_report = self.business_metrics.generate_business_report(
+                business_metrics
+            )
+        except Exception as e:
+            business_report = f"MÉTRICAS DE NEGÓCIO: Erro ao gerar relatório - {str(e)}"
 
         return "\n\n".join(
             [header, business_report, perf_report, drift_report, retrain_report]
