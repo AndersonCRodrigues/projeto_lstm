@@ -6,6 +6,7 @@ import optuna
 import mlflow
 import joblib
 from pathlib import Path
+from typing import Optional 
 
 from production_lstm.config import settings
 from production_lstm.data.processing import (
@@ -50,7 +51,7 @@ class ModelTrainer:
         train_loader: DataLoader,
         val_loader: DataLoader,
         epochs: int = 100,
-        trial: optuna.Trial | None = None,
+        trial: Optional[optuna.Trial] = None,  # CORREÇÃO: Compatibilidade Python 3.9
     ) -> float:
         best_val_loss = float("inf")
         best_model_state = None
@@ -107,10 +108,12 @@ class ModelTrainer:
         ).flatten()
 
         mae = np.mean(np.abs(targets - predictions))
-        r2 = 1 - (
-            np.sum((targets - predictions) ** 2)
-            / np.sum((targets - np.mean(targets)) ** 2)
-        )
+
+        # CORREÇÃO: R² com proteção contra divisão por zero
+        ss_res = np.sum((targets - predictions) ** 2)
+        ss_tot = np.sum((targets - np.mean(targets)) ** 2)
+        r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0.0
+
         return {"test_mae": mae, "test_r2": r2}
 
 
@@ -118,6 +121,7 @@ def run_training_pipeline(optimize: bool = True, n_trials: int = 15):
     logger = StructuredJSONLogger(settings.log_level)
     logger.log_event("training_pipeline_started", optimize=optimize, n_trials=n_trials)
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.log_event("device_selected", device=device)
 
     df = gerar_serie_multivariada_realista()
     (
@@ -162,6 +166,9 @@ def run_training_pipeline(optimize: bool = True, n_trials: int = 15):
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
         best_params = study.best_params
+        logger.log_event(
+            "hyperparameter_optimization_completed", best_params=best_params
+        )
     else:
         best_params = {
             "hidden_size": 64,
@@ -171,6 +178,7 @@ def run_training_pipeline(optimize: bool = True, n_trials: int = 15):
             "learning_rate": 0.001,
             "batch_size": 64,
         }
+        logger.log_event("using_default_hyperparameters", best_params=best_params)
 
     final_model_params = {
         k: v
@@ -189,15 +197,30 @@ def run_training_pipeline(optimize: bool = True, n_trials: int = 15):
     full_train_dataset = TimeSeriesDataset(
         np.concatenate([X_train, X_val]), np.concatenate([y_train, y_val])
     )
-    full_train_loader = DataLoader(
-        full_train_dataset, batch_size=final_training_params["batch_size"], shuffle=True
+
+    # CORREÇÃO: Usar validação com uma pequena parte dos dados de treino+val
+    # Em vez de usar teste como validação
+    val_size = int(0.1 * len(full_train_dataset))
+    train_size = len(full_train_dataset) - val_size
+    final_train_dataset, final_val_dataset = torch.utils.data.random_split(
+        full_train_dataset, [train_size, val_size]
     )
+
+    final_train_loader = DataLoader(
+        final_train_dataset,
+        batch_size=final_training_params["batch_size"],
+        shuffle=True,
+    )
+    final_val_loader = DataLoader(
+        final_val_dataset, batch_size=final_training_params["batch_size"]
+    )
+
     test_loader = DataLoader(
         TimeSeriesDataset(X_test, y_test),
         batch_size=final_training_params["batch_size"],
     )
 
-    final_trainer.train(full_train_loader, test_loader, epochs=150)
+    final_trainer.train(final_train_loader, final_val_loader, epochs=150)
 
     final_metrics = final_trainer.get_final_metrics(test_loader, scaler_target)
     logger.log_event("final_model_training_completed", final_metrics=final_metrics)
@@ -232,4 +255,4 @@ if __name__ == "__main__":
         logger.log_error(
             "pipeline_failed", "O pipeline de treinamento falhou.", exc_info=e
         )
-        raise e
+        raise  # CORREÇÃO: Sem 'e' para preservar stack trace
